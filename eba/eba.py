@@ -9,34 +9,18 @@ from itertools import combinations
 from statsmodels.api import OLS
 from statsmodels.tools import add_constant
 from joblib import Parallel, delayed
-from .utils import (check_lints, 
-                   to_list, 
+from .utils import (to_list, 
                    get_combinations, 
                    save_as_pkl, 
-                   check_if_exists)
+                   remove_existing, 
+                   leamer_check, 
+                   sala_check_generic, 
+                   sala_check_normal)
 
+class EBA(object): 
+    """Class for running Extreme Bounds Analysis on a dataframe.
 
-def run_eba(
-        df,
-        y,  
-        focus=None, 
-        free=None, 
-        doubtful=None, 
-        k=3, 
-        model='linear', 
-        dropna=True,
-        z_score=1.96, 
-        verbose=True,
-        scale=True,
-        max_n=None, 
-        n_proc=1,
-        savepath = None, 
-        save_by_var = False,
-        check_for_existing=True,
-    ): 
-    """Run an EBA analysis on a dataframe.
-
-    Parameters
+    Attributes
     ----------
     df : pandas dataframe or numpy array
         Dataframe containing observations
@@ -79,251 +63,208 @@ def run_eba(
     check_for_existing : bool, optional
         If True, check if results already exist in savepath. If so, skip analysis for 
         these variables. 
-        
-    Returns
-    -------
-    results : dict  
-        Dictionary containing results of analysis. Keys are names of focus variables. 
-        Values are dictionaries, themselves containing: 
-            - coef: list of coefficients across all regressions 
-            - llf: list of log-likelihoods across all regressions
-            - se: list of standard errors across all regressions
-            - n: number of regressions run for this variable
-            - leamer: Leamer robustness check for this variable (bool)
-            - sala_normal: Sala-i-Martin test under normality assumption 
-            - sala_generic_lf: Generic Sala-i-Martin test using log-likelihood as weights
-            - sala_generic_unweighted: Generic Sala-i-Martin test using equal weights
-
-    """    
     
-    # convert df to pandas df if necessary
-    if isinstance(df, np.ndarray):
-        df = pd.DataFrame(df)
-        if not (
-            check_lints(focus) and check_lints(free) and check_lints(doubtful)
-        ):
-            raise ValueError(
-                "focus, free, and doubtful must be lists of integers (or None) if df is a numpy array"
-                )
+    """
+
+    def __init__(
+            self, 
+            k=3,
+            model='linear',
+            dropna=True,
+            z_score=1.96,
+            verbose=True,
+            scale=True,
+            max_n=None,
+            n_proc=1,
+            savepath=None,
+            save_by_var=False,
+            check_for_existing=True,           
+            ) -> None:
         
-    # scale data if scale==True 
-    if scale:
-        df = (df - df.mean()) / df.std() 
+        self.k = k
+        self.model_name = model
+        self.dropna = dropna
+        self.z_score = z_score
+        self.verbose = verbose
+        self.scale = scale
+        self.max_n = max_n
+        self.n_proc = n_proc
+        self.savepath = savepath
+        self.save_by_var = save_by_var
+        self.check_for_existing = check_for_existing
+
+        _accepted_models = ['linear']
+        self.model = None
+        if self.model_name not in _accepted_models:
+            raise ValueError(f'{self.model} is not a valid model. Please choose from {_accepted_models}')
+        if self.model_name == 'linear':
+            self.model = OLS
+
+    def _prepare_df(self, df, y):
+
+        self.df = df
+
+        # convert df to pandas df if necessary
+        if isinstance(self.df, np.ndarray):
+            self.df = pd.DataFrame(self.df)
         
-    # Use all variables as focus and doubtful variables if unspecified
-    # Use no variables as free variables if unspecified
-    free = [] if free is None else free
-    cols_in_play = np.setdiff1d(list(df.columns), free)
-    focus = cols_in_play if focus is None else to_list(focus)
-    doubtful = cols_in_play if doubtful is None else to_list(doubtful)
+        # scale data if scale==True 
+        if self.scale:
+            self.df = (self.df - self.df.mean()) / self.df.std() 
 
-    # Summarize variables if verbose 
-    if verbose: 
-        print('Variables Summary')
-        print('-'*60)
-        print(f'{len(free)} Free variables: {free}')
-        print(f'{len(focus)} Focus variables')
-        print(f'{len(doubtful)} Doubtful variables')
-        print('-'*60, '\n')
+        # Add y to df if necessary
+        self.label_name = None
+        if isinstance(y, str): 
+            assert y in list(self.df.columns), "label string must be in dataframe"
+            self.label_name = y
+        elif isinstance(y, list) or isinstance(y, np.ndarray):
+            assert len(y) == self.df.shape[0], "label vector and df must have same number of observations"
+            self.df['y'] = y
+            self.label_name = 'y' 
+
+    def _prepare_vars(self, focus, free, doubtful):
+
+        # Use all variables as focus and doubtful variables if unspecified
+        # Use no variables as free variables if unspecified
+        self.free = [] if free is None else free
+        cols_in_play = np.setdiff1d(list(self.df.columns), free)
+        self.focus = cols_in_play if focus is None else to_list(focus)
+        self.doubtful = cols_in_play if doubtful is None else to_list(doubtful)
+
+        # Ensure that focus and doubtful variables are in df
+        for var in self.focus + self.doubtful:
+            assert var in list(self.df.columns), f'{var} is not in dataframe'
     
-    # Add y to df if necessary
-    if isinstance(y, str): 
-        assert y in list(df.columns), "label string must be in dataframe"
-        label_name = y
-    elif isinstance(y, list) or isinstance(y, np.ndarray):
-        assert len(y) == df.shape[0], "label vector and df must have same number of observations"
-        df['y'] = y
-        label_name = 'y'    
     
-    if model == 'linear':
-        model_type = OLS
-    else: 
-        model_type = OLS
+    def run(self, df, y,  focus=None, free=None, doubtful=None): 
 
-    results = {}
-
-    # Skip analysis if existing results are found
-    to_skip = []
-    for var in focus: 
-        if check_for_existing and check_if_exists(savepath, var):
-            if verbose: 
-                print(f'Found existing results for: {var}. Skipping.')
-            to_skip.append(var)
-    focus = np.setdiff1d(focus, to_skip)
-
-    # Run analysis for each focus variable 
-    process = partial(
-        process_var, df=df, free=free, doubtful=doubtful, 
-        k=k, label_name=label_name, dropna=dropna, model_type=model_type, 
-        verbose=verbose, savepath=savepath, save_by_var=save_by_var, model=model, 
-        max_n=max_n
-    )
-    results = Parallel(n_jobs=n_proc)(delayed(process)(var=var) for var in focus)
         
+        self._prepare_df(df, y)
+        self._prepare_vars(focus, free, doubtful)
 
-    # Save all results
-    if savepath is not None: 
-        save_as_pkl(savepath, 'all_results', results, verbose=verbose)
+        # Summarize variables if verbose 
+        if self.verbose: 
+            print('Variables Summary')
+            print('-'*60)
+            print(f'{len(self.free)} Free variables: {self.free}')
+            print(f'{len(self.focus)} Focus variables')
+            print(f'{len(self.doubtful)} Doubtful variables')
+            print('-'*60, '\n')
 
-    return results 
+        
+        # Skip previous analyses if found 
+        if self.check_for_existing: 
+            self.focus = remove_existing(self.focus, self.savepath, self.verbose)
 
 
-def process_var(df, var, free, doubtful, k, label_name, 
-                dropna, model_type, verbose, savepath, save_by_var, model, max_n): 
+        # Run analysis for each focus variable 
+        results = Parallel(n_jobs=self.n_proc)(delayed(self._process_var)(var) for var in focus)
 
-    start = time.time()
-    if verbose: 
-        print(f'Running analysis for: {var}')
+        # Save all results
+        if self.savepath is not None: 
+            save_as_pkl(self.savepath, 'all_results', results, verbose=self.verbose)
+
+        return results 
     
-    # Get all combinations of doubtful variables for regression
-    combs = get_combinations(doubtful, k, [var, label_name], max_n)
+    def _process_var(self, var): 
 
-    # Run all regressions
-    var_results = run_regressions(
-        df, var, free, label_name, dropna, model_type, combs
-    )
-    if var_results['n'] == 0: 
-        if verbose: 
-            print(f'No regressions able to be run for: {var}. Skipping.')
+        start = time.time()
+        if self.verbose: 
+            print(f'Running analysis for: {var}')
+        
+        # Get all combinations of doubtful variables for regression
+        combs = get_combinations(self.doubtful, self.k, [var, self.label_name], self.max_n)
+
+        # Run all regressions
+        var_results = self.run_regressions(combs)
+        if var_results['n'] == 0: 
+            if self.verbose: 
+                print(f'No regressions able to be run for: {var}. Skipping.')
+            return var_results
+
+        # Calculate robustness 
+        var_results = self.compute_statistics(var_results)
+        
+        # Save these results
+        var_results['model'] = self.model_name
+        if self.savepath is not None and self.save_by_var:
+            save_as_pkl(self.savepath, var, var_results, verbose=self.verbose)
+
+        if self.verbose: 
+            print(f'Completed analysis for: {var}. ({time.time() - start:.2f} seconds))\n')
+
+        
+    def _run_regressions(self, var, combs):
+        """Run all regressions for a single variable"""
+
+        var_results = {
+            'coef': [],
+            'se': [],
+            'llf': [], 
+            'n': 0, # number of regressions run
+        }
+
+        # Loop over all combinations of k doubtful variables
+        for kvars in combs:
+
+            # Exclude combination if it contains the focus variable
+            if var in kvars or self.label_name in kvars:   
+                continue 
+
+            data = self.df[[self.label_name] + [var] + self.free + kvars]
+            data = data.dropna() if self.dropna else data
+            X = add_constant(data[[var] + self.free + kvars])
+            y = data[self.label_name]
+
+            # Skip this regression if no observations
+            if X.shape[0] == 0: 
+                continue
+            
+            # Run regression
+            reg = self.model(y, X).fit()
+
+            # Store coefficients and variance 
+            coef = reg.params[var]
+            se = reg.bse[var]
+            llf = reg.llf
+        
+            # Store results 
+            var_results['coef'].append(coef)
+            var_results['se'].append(se)
+            var_results['llf'].append(llf)
+            var_results['n'] += 1
+
         return var_results
 
-    # Calculate robustness 
-    var_results = compute_statistics(var_results, z_score=1.96)
-    
-    # Save these results
-    # results[var] = var_results
-    # results[var]['model'] = model
-    var_results['model'] = model
-    if savepath is not None and save_by_var:
-        save_as_pkl(savepath, var, var_results, verbose=verbose)
-
-    if verbose: 
-        print(f'Completed analysis for: {var}. ({time.time() - start:.2f} seconds))\n')
-
-def run_regressions(df, var, free, label_name, 
-                       dropna, model_type, combs):
-    """Run all regressions for a single variable"""
-
-    var_results = {
-        'coef': [],
-        'se': [],
-        'llf': [], 
-        'n': 0, # number of regressions run
-    }
-
-    # Loop over all combinations of k doubtful variables
-    for kvars in combs:
-
-        # Exclude combination if it contains the focus variable
-        if var in kvars or label_name in kvars:   
-            continue 
-
-        data = df[[label_name] + [var] + free + kvars]
-        data = data.dropna() if dropna else data
-        X = add_constant(data[[var] + free + kvars])
-        y = data[label_name]
-
-        # Skip this regression if no observations
-        if X.shape[0] == 0: 
-            continue
+    def _compute_statistics(self, results):
         
-        # Run regression
-        reg = model_type(y, X).fit()
 
-        # Store coefficients and variance 
-        coef = reg.params[var]
-        se = reg.bse[var]
-        llf = reg.llf
+        # Compute weights for each regression based on log-likelihood
+        # weights = np.exp(results['llf'])
+        weights = results['llf']
+
+        # fix if weights are include nans, are all zeros or all nans
+        weights = np.nan_to_num(weights, nan=np.nanmax(weights))
+        if np.all(np.isnan(weights)) or np.all(weights == 0) \
+            or np.sum(weights) == 0 or np.sum(weights) == np.inf: 
+            weights = np.ones(len(weights))
+
+        weights = weights / np.sum(weights)
+
+        # Compute robustness according to various criteria
+        results['leamer'] = leamer_check(
+            results['coef'], results['se'], self.z_score
+        )
+        results['sala_normal'] = sala_check_normal(
+            results['coef'], results['se'], weights
+        )
+        results['sala_generic_lf'] = sala_check_generic(
+            results['coef'], results['se'], weights
+        )
+        results['sala_generic_unweighted'] = sala_check_generic(
+            results['coef'], results['se'], None
+        )
+
+        return results
+         
     
-        # Store results 
-        var_results['coef'].append(coef)
-        var_results['se'].append(se)
-        var_results['llf'].append(llf)
-        var_results['n'] += 1
-
-    return var_results
-
-def compute_statistics(results, z_score):
-    
-
-    # Compute weights for each regression based on log-likelihood
-    # weights = np.exp(results['llf'])
-    weights = results['llf']
-
-    # fix if weights are include nans, are all zeros or all nans
-    weights = np.nan_to_num(weights, nan=np.nanmax(weights))
-    if np.all(np.isnan(weights)) or np.all(weights == 0) \
-        or np.sum(weights) == 0 or np.sum(weights) == np.inf: 
-        weights = np.ones(len(weights))
-
-    weights = weights / np.sum(weights)
-
-    # Compute robustness according to various criteria
-    results['leamer'] = leamer_check(
-        results['coef'], results['se'], z_score
-    )
-    results['sala_normal'] = sala_check_normal(
-        results['coef'], results['se'], weights
-    )
-    results['sala_generic_lf'] = sala_check_generic(
-        results['coef'], results['se'], weights
-    )
-    results['sala_generic_unweighted'] = sala_check_generic(
-        results['coef'], results['se'], None
-    )
-
-    return results
-    
-    
-def leamer_check(coef, se, z_score=1.96): 
-    """Check if variable with given coefficients and standard errors is 
-    robust according to Leamer's criteria, i.e., whether the upper and lower
-    bounds of the confidence interval have the same sign. 
-    """
-
-    coef = np.array(coef)
-    se = np.array(se)
-
-    upper_bounds = coef + z_score * se
-    lower_bounds = coef - z_score * se
-
-    return (
-        np.all(upper_bounds > 0) and np.all(lower_bounds > 0)\
-    ) or \
-    (
-        np.all(upper_bounds < 0) and np.all(lower_bounds < 0)
-    )
-
-def sala_check_normal(coef, se, weights=None): 
-    """Check if variable with given coefficients and standard errors is
-    robust according to Sala-i-Martin's criteria, i.e., whether the
-    coefficient is significantly different from zero.
-    """
-
-    if weights is None: 
-        weights = np.ones(len(coef))
-    
-    beta_bar = np.average(coef, weights=weights)
-    var_bar = np.sqrt(np.average(np.array(se)**2, weights=weights))
-
-    # Compute cdf evaluated at zero 
-    cdf_zero = norm.cdf(0, loc=beta_bar, scale=np.sqrt(var_bar))
-    return cdf_zero 
-
-
-def sala_check_generic(coef, se, weights=None): 
-
-    if weights is None: 
-        weights = np.ones(len(coef)) / len(coef) 
-    
-    cdf_zeros = [
-        norm.cdf(0, loc=c, scale=std) for c, std in zip(coef, se)
-    ]
-
-    return np.average(cdf_zeros, weights=weights)
-    
-
-
-
-
-

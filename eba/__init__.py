@@ -1,1 +1,1 @@
-from .eba import run_eba
+from .eba import EBA
