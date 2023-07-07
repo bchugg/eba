@@ -3,6 +3,7 @@ import pandas as pd
 import pickle 
 import os  
 import time
+from copy import deepcopy
 from functools import partial
 from scipy.stats import norm
 from itertools import combinations
@@ -107,6 +108,7 @@ class EBA(object):
         # convert df to pandas df if necessary
         if isinstance(self.df, np.ndarray):
             self.df = pd.DataFrame(self.df)
+            print(self.df.columns)
         
         # scale data if scale==True 
         if self.scale:
@@ -115,7 +117,7 @@ class EBA(object):
         # Add y to df if necessary
         self.label_name = None
         if isinstance(y, str): 
-            assert y in list(self.df.columns), "label string must be in dataframe"
+            assert y in self.df.columns, "label string must be in dataframe"
             self.label_name = y
         elif isinstance(y, list) or isinstance(y, np.ndarray):
             assert len(y) == self.df.shape[0], "label vector and df must have same number of observations"
@@ -127,13 +129,15 @@ class EBA(object):
         # Use all variables as focus and doubtful variables if unspecified
         # Use no variables as free variables if unspecified
         self.free = [] if free is None else free
-        cols_in_play = np.setdiff1d(list(self.df.columns), free)
+        feature_cols = deepcopy(list(self.df.columns))
+        feature_cols.remove(self.label_name)
+        cols_in_play = np.setdiff1d(feature_cols, self.free)
         self.focus = cols_in_play if focus is None else to_list(focus)
         self.doubtful = cols_in_play if doubtful is None else to_list(doubtful)
 
         # Ensure that focus and doubtful variables are in df
-        for var in self.focus + self.doubtful:
-            assert var in list(self.df.columns), f'{var} is not in dataframe'
+        for var in np.append(self.focus, self.doubtful):
+            assert var in self.df.columns, f'{var} is not in dataframe'
     
     
     def run(self, df, y,  focus=None, free=None, doubtful=None): 
@@ -150,15 +154,15 @@ class EBA(object):
             print(f'{len(self.focus)} Focus variables')
             print(f'{len(self.doubtful)} Doubtful variables')
             print('-'*60, '\n')
-
         
         # Skip previous analyses if found 
         if self.check_for_existing: 
             self.focus = remove_existing(self.focus, self.savepath, self.verbose)
 
-
         # Run analysis for each focus variable 
-        results = Parallel(n_jobs=self.n_proc)(delayed(self._process_var)(var) for var in focus)
+        results = Parallel(n_jobs=self.n_proc)(
+            delayed(self._process_var)(var) for var in self.focus
+        )
 
         # Save all results
         if self.savepath is not None: 
@@ -176,14 +180,14 @@ class EBA(object):
         combs = get_combinations(self.doubtful, self.k, [var, self.label_name], self.max_n)
 
         # Run all regressions
-        var_results = self.run_regressions(combs)
+        var_results = self._run_regressions(var, combs)
         if var_results['n'] == 0: 
             if self.verbose: 
                 print(f'No regressions able to be run for: {var}. Skipping.')
             return var_results
 
         # Calculate robustness 
-        var_results = self.compute_statistics(var_results)
+        var_results = self._compute_statistics(var_results)
         
         # Save these results
         var_results['model'] = self.model_name

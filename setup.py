@@ -5,7 +5,7 @@ with open("README.md", "r") as f:
     long_description = f.read()
 
 setup(
-    name='eba',
+    name='xbounds',
     version='0.01',
     description='Extreme Bounds Analysis',
     long_description=long_description,
@@ -14,7 +14,7 @@ setup(
     author='Ben Chugg',
     author_email='benchugg@cmu.edu',
     license='MIT',
-    packages=['eba'],
+    packages=['xbounds'],
     zip_safe=False,
     classifiers=[
         "Programming Language :: Python :: 3",

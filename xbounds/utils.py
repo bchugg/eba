@@ -48,6 +48,7 @@ def check_if_exists(savepath, fname):
 
 def remove_existing(vars, savepath, verbose): 
     """Remove vars from list if associated pkl file already exist in savepath"""
+    print(vars, savepath, verbose)
     to_skip = []
     for var in vars: 
         if check_if_exists(savepath, var):
