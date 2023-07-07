@@ -1,7 +1,10 @@
 from itertools import combinations
+from scipy.stats import norm
 import numpy as np
 import os 
 import pickle
+
+
 
 def check_lints(arr): 
     """check given array is all integers or None type"""
