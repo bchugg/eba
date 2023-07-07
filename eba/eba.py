@@ -3,18 +3,20 @@ import pandas as pd
 import pickle 
 import os  
 import time
+from functools import partial
 from scipy.stats import norm
 from itertools import combinations
 from statsmodels.api import OLS
 from statsmodels.tools import add_constant
-from utils import (check_lints, 
+from joblib import Parallel, delayed
+from .utils import (check_lints, 
                    to_list, 
                    get_combinations, 
                    save_as_pkl, 
                    check_if_exists)
 
 
-def eba(
+def run_eba(
         df,
         y,  
         focus=None, 
@@ -27,6 +29,7 @@ def eba(
         verbose=True,
         scale=True,
         max_n=None, 
+        n_proc=1,
         savepath = None, 
         save_by_var = False,
         check_for_existing=True,
@@ -138,42 +141,25 @@ def eba(
         model_type = OLS
 
     results = {}
-        
-    for var in focus: 
 
-        # Skip analysis if existing results are found
+    # Skip analysis if existing results are found
+    to_skip = []
+    for var in focus: 
         if check_for_existing and check_if_exists(savepath, var):
             if verbose: 
                 print(f'Found existing results for: {var}. Skipping.')
-            continue
+            to_skip.append(var)
+    focus = np.setdiff1d(focus, to_skip)
 
-        start = time.time()
-        if verbose: 
-            print(f'Running analysis for: {var}')
+    # Run analysis for each focus variable 
+    process = partial(
+        process_var, df=df, free=free, doubtful=doubtful, 
+        k=k, label_name=label_name, dropna=dropna, model_type=model_type, 
+        verbose=verbose, savepath=savepath, save_by_var=save_by_var, model=model, 
+        max_n=max_n
+    )
+    results = Parallel(n_jobs=n_proc)(delayed(process)(var=var) for var in focus)
         
-        # Get all combinations of doubtful variables for regression
-        combs = get_combinations(doubtful, k, [var, label_name], max_n)
-
-        # Run all regressions
-        var_results = run_regressions(
-            df, var, free, label_name, dropna, model_type, combs
-        )
-        if var_results['n'] == 0: 
-            if verbose: 
-                print(f'No regressions able to be run for: {var}. Skipping.')
-            continue 
-
-        # Calculate robustness 
-        var_results = compute_statistics(var_results, z_score)
-        
-        # Save these results
-        results[var] = var_results
-        results[var]['model'] = model
-        if savepath is not None and save_by_var:
-            save_as_pkl(savepath, var, results[var], verbose=verbose)
-    
-        if verbose: 
-            print(f'Completed analysis for: {var}. ({time.time() - start:.2f} seconds))\n')
 
     # Save all results
     if savepath is not None: 
@@ -181,6 +167,38 @@ def eba(
 
     return results 
 
+
+def process_var(df, var, free, doubtful, k, label_name, 
+                dropna, model_type, verbose, savepath, save_by_var, model, max_n): 
+
+    start = time.time()
+    if verbose: 
+        print(f'Running analysis for: {var}')
+    
+    # Get all combinations of doubtful variables for regression
+    combs = get_combinations(doubtful, k, [var, label_name], max_n)
+
+    # Run all regressions
+    var_results = run_regressions(
+        df, var, free, label_name, dropna, model_type, combs
+    )
+    if var_results['n'] == 0: 
+        if verbose: 
+            print(f'No regressions able to be run for: {var}. Skipping.')
+        return var_results
+
+    # Calculate robustness 
+    var_results = compute_statistics(var_results, z_score=1.96)
+    
+    # Save these results
+    # results[var] = var_results
+    # results[var]['model'] = model
+    var_results['model'] = model
+    if savepath is not None and save_by_var:
+        save_as_pkl(savepath, var, var_results, verbose=verbose)
+
+    if verbose: 
+        print(f'Completed analysis for: {var}. ({time.time() - start:.2f} seconds))\n')
 
 def run_regressions(df, var, free, label_name, 
                        dropna, model_type, combs):
