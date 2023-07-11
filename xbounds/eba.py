@@ -1,6 +1,8 @@
 import numpy as np 
 import pandas as pd
 import time
+import os 
+import pickle 
 from copy import deepcopy
 from statsmodels.api import OLS
 from statsmodels.tools import add_constant
@@ -103,7 +105,6 @@ class EBA(object):
         # convert df to pandas df if necessary
         if isinstance(self.df, np.ndarray):
             self.df = pd.DataFrame(self.df)
-            print(self.df.columns)
         
         # scale data if scale==True 
         if self.scale:
@@ -159,13 +160,25 @@ class EBA(object):
             delayed(self._process_var)(var) for var in self.focus
         )
 
+        results_dict = {}
+        for res, var in zip(results, self.focus):  
+            results_dict[var] = res
+
         # Save all results
         if self.savepath is not None: 
-            save_as_pkl(self.savepath, 'all_results', results, verbose=self.verbose)
+            save_as_pkl(self.savepath, 'all_results', 
+                        results_dict, verbose=self.verbose)
 
-        return results 
+        return results_dict
     
     def _process_var(self, var): 
+
+        # Check if results already exist for this variable
+        if self.savepath is not None: 
+            if os.path.exists(os.path.join(self.savepath, f'{var}.pkl')):
+                with open(os.path.join(self.savepath, f'{var}.pkl'), 'rb') as f:
+                    results = pickle.load(f)
+                    return results             
 
         start = time.time()
         if self.verbose: 
@@ -191,6 +204,8 @@ class EBA(object):
 
         if self.verbose: 
             print(f'Completed analysis for: {var}. ({time.time() - start:.2f} seconds))\n')
+
+        return var_results
 
         
     def _run_regressions(self, var, combs):
