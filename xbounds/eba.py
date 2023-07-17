@@ -216,6 +216,8 @@ class EBA(object):
             'se': [],
             'llf': [], 
             'n': 0, # number of regressions run
+            'n_obs': [], # number of observations in each regression
+            'avg_obs': 0  # average number of observations 
         }
 
         # Loop over all combinations of k doubtful variables
@@ -231,22 +233,27 @@ class EBA(object):
             y = data[self.label_name]
 
             # Skip this regression if no observations
-            if X.shape[0] == 0: 
+            n_obs = X.shape[0]
+            if n_obs == 0: 
                 continue
             
             # Run regression
             reg = self.model(y, X).fit()
 
-            # Store coefficients and variance 
+            # Get and store results 
             coef = reg.params[var]
             se = reg.bse[var]
             llf = reg.llf
         
-            # Store results 
             var_results['coef'].append(coef)
             var_results['se'].append(se)
             var_results['llf'].append(llf)
             var_results['n'] += 1
+            var_results['n_obs'].append(n_obs)
+
+        # Calculate average number of observations
+        if var_results['n'] > 0:
+            var_results['avg_obs'] = np.mean(var_results['n_obs'])
 
         return var_results
 
