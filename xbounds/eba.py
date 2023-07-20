@@ -155,13 +155,16 @@ class EBA(object):
         if self.check_for_existing: 
             self.focus = remove_existing(self.focus, self.savepath, self.verbose)
 
-        # Run analysis for each focus variable 
-        results = Parallel(n_jobs=self.n_proc)(
-            delayed(self._process_var)(var) for var in self.focus
+        # Run analysis for each free variable
+        results_dict = self._test_base_vars(
+            get_combinations(self.doubtful, self.k, [self.label_name], self.max_n)
         )
 
-        results_dict = {}
-        for res, var in zip(results, self.focus):  
+        # Run analysis for each focus variable 
+        results_focus = Parallel(n_jobs=self.n_proc)(
+            delayed(self._process_var)(var) for var in self.focus
+        )
+        for res, var in zip(results_focus, self.focus):  
             results_dict[var] = res
 
         # Save all results
@@ -174,7 +177,7 @@ class EBA(object):
     def _process_var(self, var): 
 
         # Check if results already exist for this variable
-        if self.savepath is not None: 
+        if self.savepath is not None and self.check_for_existing: 
             if os.path.exists(os.path.join(self.savepath, f'{var}.pkl')):
                 with open(os.path.join(self.savepath, f'{var}.pkl'), 'rb') as f:
                     results = pickle.load(f)
@@ -208,6 +211,52 @@ class EBA(object):
         return var_results
 
         
+    def _test_base_vars(self, combs): 
+
+        results = {free: {
+            'coef': [],
+            'se': [],
+            'llf': [],
+            'n': 0,
+            'n_obs': []
+        } for free in self.free}
+
+        for kvars in combs: 
+
+            data = self.df[[self.label_name] + self.free + kvars]
+            data = data.dropna() if self.dropna else data
+            X = add_constant(data[self.free + kvars])
+            y = data[self.label_name]
+            
+            # Skip this regression if no observations
+            n_obs = X.shape[0]
+            if n_obs == 0: 
+                continue
+            
+            # Run regression
+            reg = self.model(y, X).fit()
+
+            # Update results
+            for key, val in results.items():
+
+                # Get and store results 
+                coef = reg.params[key]
+                se = reg.bse[key]
+                llf = reg.llf
+        
+                val['coef'].append(coef)
+                val['se'].append(se)
+                val['llf'].append(llf)
+                val['n'] += 1
+                val['n_obs'].append(n_obs)
+
+        # Save 
+        if self.savepath is not None: 
+            save_as_pkl(self.savepath, 'base_vars', 
+                    results, verbose=self.verbose)
+            
+        return results
+
     def _run_regressions(self, var, combs):
         """Run all regressions for a single variable"""
 
@@ -217,7 +266,6 @@ class EBA(object):
             'llf': [], 
             'n': 0, # number of regressions run
             'n_obs': [], # number of observations in each regression
-            'avg_obs': 0  # average number of observations 
         }
 
         # Loop over all combinations of k doubtful variables
@@ -250,10 +298,6 @@ class EBA(object):
             var_results['llf'].append(llf)
             var_results['n'] += 1
             var_results['n_obs'].append(n_obs)
-
-        # Calculate average number of observations
-        if var_results['n'] > 0:
-            var_results['avg_obs'] = np.mean(var_results['n_obs'])
 
         return var_results
 
