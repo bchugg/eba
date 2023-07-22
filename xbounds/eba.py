@@ -6,6 +6,7 @@ import pickle
 from copy import deepcopy
 from statsmodels.api import OLS
 from statsmodels.tools import add_constant
+from linearmodels.panel import PanelOLS
 from joblib import Parallel, delayed
 from .utils import (to_list, 
                    get_combinations, 
@@ -77,6 +78,8 @@ class EBA(object):
             savepath=None,
             save_by_var=False,
             check_for_existing=True,           
+            entity_effects=False, 
+            time_effects=False
             ) -> None:
         
         self.k = k
@@ -90,17 +93,34 @@ class EBA(object):
         self.savepath = savepath
         self.save_by_var = save_by_var
         self.check_for_existing = check_for_existing
+        self.entity_effects = entity_effects
+        self.time_effects = time_effects
+
+        # Panel data attributes. These are set during call to run
+        self.entity_col = None 
+        self.time_col = None
+        self.panel = entity_effects or time_effects
 
         _accepted_models = ['linear']
         self.model = None
         if self.model_name not in _accepted_models:
             raise ValueError(f'{self.model} is not a valid model. Please choose from {_accepted_models}')
-        if self.model_name == 'linear':
+        if self.model_name == 'linear' and not self.panel:
             self.model = OLS
+        elif self.model_name == 'linear' and self.panel:
+            self.model = PanelOLS
 
-    def _prepare_df(self, df, y):
+    def _prepare_df(self, df, y, entity_col=None, time_col=None):
 
         self.df = df
+        self.entity_col = entity_col
+        self.time_col = time_col
+
+        # Data is panel data; use panel OLS
+        if (entity_col is not None and time_col is not None)\
+              and self.model_name == 'linear':
+            self.model = PanelOLS
+            self.panel = True 
 
         # convert df to pandas df if necessary
         if isinstance(self.df, np.ndarray):
@@ -120,6 +140,15 @@ class EBA(object):
             self.df['y'] = y
             self.label_name = 'y' 
 
+        # Setup for panel data if necessary 
+        if self.panel:
+            try: 
+                self.df.set_index([self.entity_col, self.time_col], inplace=True)
+            except KeyError:
+                # user already correctly set index
+                pass 
+            
+
     def _prepare_vars(self, focus, free, doubtful):
 
         # Use all variables as focus and doubtful variables if unspecified
@@ -136,10 +165,11 @@ class EBA(object):
             assert var in self.df.columns, f'{var} is not in dataframe'
     
     
-    def run(self, df, y,  focus=None, free=None, doubtful=None): 
+    def run(self, df, y, focus=None, free=None, doubtful=None, 
+            entity_col=None, time_col=None): 
 
         
-        self._prepare_df(df, y)
+        self._prepare_df(df, y, entity_col, time_col)
         self._prepare_vars(focus, free, doubtful)
 
         # Summarize variables if verbose 
@@ -234,7 +264,7 @@ class EBA(object):
                 continue
             
             # Run regression
-            reg = self.model(y, X).fit()
+            reg = self._run_single_regression(X, y)
 
             # Update results
             for key, val in results.items():
@@ -257,6 +287,20 @@ class EBA(object):
             
         return results
 
+    def _run_single_regression(self, X, y): 
+
+        reg = None
+        if self.model_name == 'linear':  
+            if self.panel: 
+                reg = PanelOLS(y, X, entity_effects=self.entity_effects, 
+                            time_effects=self.time_effects).fit()
+            else: 
+                reg = OLS(y, X).fit()
+
+        return reg
+        
+            
+    
     def _run_regressions(self, var, combs):
         """Run all regressions for a single variable"""
 
@@ -286,7 +330,7 @@ class EBA(object):
                 continue
             
             # Run regression
-            reg = self.model(y, X).fit()
+            reg = self._run_single_regression(X, y)
 
             # Get and store results 
             coef = reg.params[var]
