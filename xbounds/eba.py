@@ -116,20 +116,10 @@ class EBA(object):
         self.entity_col = entity_col
         self.time_col = time_col
 
-        # Data is panel data; use panel OLS
-        if (entity_col is not None and time_col is not None)\
-              and self.model_name == 'linear':
-            self.model = PanelOLS
-            self.panel = True 
-
         # convert df to pandas df if necessary
         if isinstance(self.df, np.ndarray):
             self.df = pd.DataFrame(self.df)
         
-        # scale data if scale==True 
-        if self.scale:
-            self.df = (self.df - self.df.mean()) / self.df.std() 
-
         # Add y to df if necessary
         self.label_name = None
         if isinstance(y, str): 
@@ -144,9 +134,13 @@ class EBA(object):
         if self.panel:
             try: 
                 self.df.set_index([self.entity_col, self.time_col], inplace=True)
-            except KeyError:
+            except KeyError as e:
                 # user already correctly set index
                 pass 
+
+        # scale data if scale==True 
+        if self.scale:
+            self.df = (self.df - self.df.mean()) / self.df.std() 
             
 
     def _prepare_vars(self, focus, free, doubtful):
@@ -253,32 +247,39 @@ class EBA(object):
 
         for kvars in combs: 
 
-            data = self.df[[self.label_name] + self.free + kvars]
-            data = data.dropna() if self.dropna else data
-            X = add_constant(data[self.free + kvars])
-            y = data[self.label_name]
-            
-            # Skip this regression if no observations
-            n_obs = X.shape[0]
-            if n_obs == 0: 
-                continue
-            
-            # Run regression
-            reg = self._run_single_regression(X, y)
+            reg_results = self._run_single_regression(kvars)
 
-            # Update results
+            # data = self.df[[self.label_name] + self.free + kvars]
+            # data = data.dropna() if self.dropna else data
+            # X = add_constant(data[self.free + kvars])
+            # y = data[self.label_name]
+            
+            # # Skip this regression if no observations
+            # n_obs = X.shape[0]
+            # if n_obs == 0: 
+            #     continue
+            
+            # # Run regression
+            # reg = self._run_single_regression(X, y)
+
+            # # Update results
             for key, val in results.items():
 
                 # Get and store results 
-                coef = reg.params[key]
-                se = reg.bse[key]
-                llf = reg.llf
+                if self.model == OLS: 
+                    coef = reg_results.params[key]
+                    se = reg_results.bse[key]
+                    llf = reg_results.llf
+                elif self.model == PanelOLS: 
+                    coef = reg_results.params[key]
+                    se = reg_results.std_errors[key]
+                    llf = reg_results.loglik
         
                 val['coef'].append(coef)
                 val['se'].append(se)
                 val['llf'].append(llf)
                 val['n'] += 1
-                val['n_obs'].append(n_obs)
+                # val['n_obs'].append(n_obs)
 
         # Save 
         if self.savepath is not None: 
@@ -287,7 +288,21 @@ class EBA(object):
             
         return results
 
-    def _run_single_regression(self, X, y): 
+    def _run_single_regression(self, included_vars): 
+
+        data = self.df[[self.label_name] + self.free + included_vars]
+        data = data.dropna() if self.dropna else data
+        if not self.panel and self.model_name == 'linear':
+            # only add constant if not deadling with fixed-effects via Panel OLS 
+            X = add_constant(data[self.free + included_vars])
+        else: 
+            X = data[self.free + included_vars]
+        y = data[self.label_name]
+        
+        # Skip this regression if no observations
+        n_obs = X.shape[0]
+        if n_obs == 0: 
+            return None 
 
         reg = None
         if self.model_name == 'linear':  
@@ -319,29 +334,37 @@ class EBA(object):
             if var in kvars or self.label_name in kvars:   
                 continue 
 
-            data = self.df[[self.label_name] + [var] + self.free + kvars]
-            data = data.dropna() if self.dropna else data
-            X = add_constant(data[[var] + self.free + kvars])
-            y = data[self.label_name]
-
-            # Skip this regression if no observations
-            n_obs = X.shape[0]
-            if n_obs == 0: 
-                continue
-            
             # Run regression
-            reg = self._run_single_regression(X, y)
+            reg_results = self._run_single_regression([var] + kvars)
+
+            # data = self.df[[self.label_name] + [var] + self.free + kvars]
+            # data = data.dropna() if self.dropna else data
+            # X = add_constant(data[[var] + self.free + kvars])
+            # y = data[self.label_name]
+
+            # # Skip this regression if no observations
+            # n_obs = X.shape[0]
+            # if n_obs == 0: 
+            #     continue
+            
+            # # Run regression
+            # reg = self._run_single_regression(X, y)
 
             # Get and store results 
-            coef = reg.params[var]
-            se = reg.bse[var]
-            llf = reg.llf
-        
+            if self.model == OLS: 
+                coef = reg_results.params[var]
+                se = reg_results.bse[var]
+                llf = reg_results.llf
+            elif self.model == PanelOLS: 
+                coef = reg_results.params[var]
+                se = reg_results.std_errors[var]
+                llf = reg_results.loglik
+            
             var_results['coef'].append(coef)
             var_results['se'].append(se)
             var_results['llf'].append(llf)
             var_results['n'] += 1
-            var_results['n_obs'].append(n_obs)
+            # var_results['n_obs'].append(n_obs)
 
         return var_results
 
