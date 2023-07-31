@@ -183,6 +183,9 @@ class EBA(object):
         results_dict = self._run_regressions(
             get_combinations(self.doubtful, self.k, [self.label_name], self.max_n)
         )
+        for var, res in results_dict.items():
+            res = self._compute_statistics(res)
+            res['model'] = self.model_name
 
         # Run analysis for each focus variable 
         results_focus = Parallel(n_jobs=self.n_proc)(
