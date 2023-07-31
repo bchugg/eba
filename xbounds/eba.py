@@ -180,7 +180,7 @@ class EBA(object):
             self.focus = remove_existing(self.focus, self.savepath, self.verbose)
 
         # Run analysis for each free variable
-        results_dict = self._test_base_vars(
+        results_dict = self._run_regressions(
             get_combinations(self.doubtful, self.k, [self.label_name], self.max_n)
         )
 
@@ -215,7 +215,7 @@ class EBA(object):
         combs = get_combinations(self.doubtful, self.k, [var, self.label_name], self.max_n)
 
         # Run all regressions
-        var_results = self._run_regressions(var, combs)
+        var_results = self._run_regressions(combs, var)[var]
         if var_results['n'] == 0: 
             if self.verbose: 
                 print(f'No regressions able to be run for: {var}. Skipping.')
@@ -235,34 +235,23 @@ class EBA(object):
         return var_results
 
         
-    def _test_base_vars(self, combs): 
+    def _run_regressions(self, combs, var=None): 
 
+        vars_to_track = self.free if var is None else [var]
         results = {free: {
             'coef': [],
             'se': [],
             'llf': [],
             'n': 0,
             'n_obs': []
-        } for free in self.free}
+        } for free in vars_to_track}
 
         for kvars in combs: 
 
-            reg_results = self._run_single_regression(kvars)
+            reg_vars = kvars if var is None else [var] + kvars
+            reg_results, n_obs = self._run_single_regression(reg_vars)
 
-            # data = self.df[[self.label_name] + self.free + kvars]
-            # data = data.dropna() if self.dropna else data
-            # X = add_constant(data[self.free + kvars])
-            # y = data[self.label_name]
-            
-            # # Skip this regression if no observations
-            # n_obs = X.shape[0]
-            # if n_obs == 0: 
-            #     continue
-            
-            # # Run regression
-            # reg = self._run_single_regression(X, y)
-
-            # # Update results
+            # Update results
             for key, val in results.items():
 
                 # Get and store results 
@@ -279,7 +268,7 @@ class EBA(object):
                 val['se'].append(se)
                 val['llf'].append(llf)
                 val['n'] += 1
-                # val['n_obs'].append(n_obs)
+                val['n_obs'].append(n_obs)
 
         # Save 
         if self.savepath is not None: 
@@ -302,7 +291,7 @@ class EBA(object):
         # Skip this regression if no observations
         n_obs = X.shape[0]
         if n_obs == 0: 
-            return None 
+            return None, 0 
 
         reg = None
         if self.model_name == 'linear':  
@@ -312,61 +301,45 @@ class EBA(object):
             else: 
                 reg = OLS(y, X).fit()
 
-        return reg
+        return reg, n_obs
         
             
     
-    def _run_regressions(self, var, combs):
-        """Run all regressions for a single variable"""
+    # def _run_regressions(self, var, combs):
+    #     """Run all regressions for a single variable"""
 
-        var_results = {
-            'coef': [],
-            'se': [],
-            'llf': [], 
-            'n': 0, # number of regressions run
-            'n_obs': [], # number of observations in each regression
-        }
+    #     var_results = {
+    #         'coef': [],
+    #         'se': [],
+    #         'llf': [], 
+    #         'n': 0, # number of regressions run
+    #         'n_obs': [], # number of observations in each regression
+    #     }
 
-        # Loop over all combinations of k doubtful variables
-        for kvars in combs:
+    #     # Loop over all combinations of k doubtful variables
+    #     for kvars in combs:
 
-            # Exclude combination if it contains the focus variable
-            if var in kvars or self.label_name in kvars:   
-                continue 
+    #         # Run regression
+    #         reg_results = self._run_single_regression([var] + kvars)
 
-            # Run regression
-            reg_results = self._run_single_regression([var] + kvars)
 
-            # data = self.df[[self.label_name] + [var] + self.free + kvars]
-            # data = data.dropna() if self.dropna else data
-            # X = add_constant(data[[var] + self.free + kvars])
-            # y = data[self.label_name]
-
-            # # Skip this regression if no observations
-            # n_obs = X.shape[0]
-            # if n_obs == 0: 
-            #     continue
+    #         # Get and store results 
+    #         if self.model == OLS: 
+    #             coef = reg_results.params[var]
+    #             se = reg_results.bse[var]
+    #             llf = reg_results.llf
+    #         elif self.model == PanelOLS: 
+    #             coef = reg_results.params[var]
+    #             se = reg_results.std_errors[var]
+    #             llf = reg_results.loglik
             
-            # # Run regression
-            # reg = self._run_single_regression(X, y)
+    #         var_results['coef'].append(coef)
+    #         var_results['se'].append(se)
+    #         var_results['llf'].append(llf)
+    #         var_results['n'] += 1
+    #         # var_results['n_obs'].append(n_obs)
 
-            # Get and store results 
-            if self.model == OLS: 
-                coef = reg_results.params[var]
-                se = reg_results.bse[var]
-                llf = reg_results.llf
-            elif self.model == PanelOLS: 
-                coef = reg_results.params[var]
-                se = reg_results.std_errors[var]
-                llf = reg_results.loglik
-            
-            var_results['coef'].append(coef)
-            var_results['se'].append(se)
-            var_results['llf'].append(llf)
-            var_results['n'] += 1
-            # var_results['n_obs'].append(n_obs)
-
-        return var_results
+    #     return var_results
 
     def _compute_statistics(self, results):
         
