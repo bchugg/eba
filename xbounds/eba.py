@@ -5,6 +5,8 @@ import os
 import pickle 
 from copy import deepcopy
 from statsmodels.api import OLS
+from statsmodels.discrete.discrete_model import Logit
+from statsmodels.discrete.discrete_model import Probit
 from statsmodels.tools import add_constant
 from linearmodels.panel import PanelOLS
 from joblib import Parallel, delayed
@@ -101,7 +103,7 @@ class EBA(object):
         self.time_col = None
         self.panel = entity_effects or time_effects
 
-        _accepted_models = ['linear']
+        _accepted_models = ['linear', 'logit', 'probit']
         self.model = None
         if self.model_name not in _accepted_models:
             raise ValueError(f'{self.model} is not a valid model. Please choose from {_accepted_models}')
@@ -109,6 +111,10 @@ class EBA(object):
             self.model = OLS
         elif self.model_name == 'linear' and self.panel:
             self.model = PanelOLS
+        elif self.model_name == 'probit': 
+            self.model = Probit
+        elif self.model_name == 'logit':
+            self.model = Logit
 
     def _prepare_df(self, df, y, entity_col=None, time_col=None):
 
@@ -166,6 +172,10 @@ class EBA(object):
         self._prepare_df(df, y, entity_col, time_col)
         self._prepare_vars(focus, free, doubtful)
 
+        # Model summary
+        if self.verbose: 
+            print('Using', self.model)
+
         # Summarize variables if verbose 
         if self.verbose: 
             print('Variables Summary')
@@ -179,13 +189,15 @@ class EBA(object):
         if self.check_for_existing: 
             self.focus = remove_existing(self.focus, self.savepath, self.verbose)
 
-        # Run analysis for each free variable
+        # Run analysis for the free variables
         results_dict = self._run_regressions(
             get_combinations(self.doubtful, self.k, [self.label_name], self.max_n)
         )
         for var, res in results_dict.items():
             res = self._compute_statistics(res)
             res['model'] = self.model_name
+            if self.savepath is not None and self.save_by_var:
+                save_as_pkl(self.savepath, var, res, verbose=self.verbose)
 
         # Run analysis for each focus variable 
         results_focus = Parallel(n_jobs=self.n_proc)(
@@ -273,10 +285,10 @@ class EBA(object):
                 val['n'] += 1
                 val['n_obs'].append(n_obs)
 
-        # Save 
-        if self.savepath is not None: 
-            save_as_pkl(self.savepath, 'base_vars', 
-                    results, verbose=self.verbose)
+        # # Save 
+        # if self.savepath is not None: 
+        #     save_as_pkl(self.savepath, 'base_vars', 
+        #             results, verbose=self.verbose)
             
         return results
 
